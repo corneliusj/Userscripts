@@ -126,17 +126,13 @@
   }
 
   function parseStopoverSummary(label) {
-    const re = /Stopover \(\d+ of \d+\) is a ([^.]+?) stopover at ([^.]+?)\./gi;
-    const summaries = [];
-    let m;
-    while ((m = re.exec(label)) !== null) {
-      const durText = m[1].trim();
-      const locText = m[2].trim();
-      const cityMatch = locText.match(/in ([A-Za-z .'-]+)$/);
-      const city = cityMatch ? cityMatch[1].trim() : locText;
-      summaries.push(`${city} (${durText})`);
-    }
-    return summaries.join(' · ');
+    const m = label.match(/Stopover \(\d+ of \d+\) is a ([^.]+?) stopover at ([^.]+?)\./i);
+    if (!m) return '';
+    const durText = m[1].trim();
+    const locText = m[2].trim();
+    const cityMatch = locText.match(/in ([A-Za-z .'-]+)$/);
+    const city = cityMatch ? cityMatch[1].trim() : locText;
+    return `${city} (${durText})`;
   }
 
   function parseLayover(label) {
