@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Google Flights Extractor
 // @namespace    https://example.com/google-flights-extractor
-// @version      1.7.0
-// @description  Extract flights, times, prices, durations, stops, airlines, cabin class, aircraft type, flight number, operating carrier, legroom, wifi/USB/power, emissions and contrail info from a Google Flights search results page. Export as JSON, CSV, a printable/PDF-ready HTML report, or a Word (.doc) file. Includes a dry-run toggle scanner and a confirmed "Expand All" action. Trusted-Types / CSP safe.
+// @version      1.8.0
+// @description  Extract flights, times, prices, durations, stops, airlines, cabin class, aircraft type, flight number, operating carrier, legroom, wifi/USB/power, emissions and contrail info from a Google Flights search results page. Export as JSON, CSV, a printable/PDF-ready HTML report, or a Word (.doc) file. Includes a dry-run toggle scanner and a confirmed "Expand All" action. On the Explore map, colors price pins cheapest-to-most-expensive as a green-to-red heatmap. Trusted-Types / CSP safe.
 // @author       you
 // @match        https://www.google.com/travel/flights*
+// @match        https://www.google.com/travel/explore*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -20,6 +21,9 @@
   const EXPAND_BTN_ID = 'gfe-expand-btn';
   const PANEL_ID = 'gfe-panel';
   const SCAN_PANEL_ID = 'gfe-scan-panel';
+
+  const isFlightsPage = () => location.pathname.startsWith('/travel/flights');
+  const isExplorePage = () => location.pathname.startsWith('/travel/explore');
 
   /* ---------------------------------------------------------
    * DOM helper — NEVER uses innerHTML/outerHTML on the Google
@@ -753,6 +757,91 @@
   }
 
   /* ---------------------------------------------------------
+   * Explore map price heatmap — colors the price pins on
+   * google.com/travel/explore (the "map" search) from cheapest
+   * (green) to most expensive (red), relative to whatever pins
+   * are currently rendered on screen. Re-normalizes on every
+   * pan/zoom/date/filter change since the observer re-runs it.
+   *
+   * Google's explore map draws each price pin as plain overlay
+   * DOM (not canvas), but the class names are obfuscated and
+   * change often, so instead of hardcoding a selector we find
+   * the price *text* leaf directly (its content is stable: a
+   * currency symbol plus digits) and then walk up to whichever
+   * ancestor is actually painting the pill's background.
+   * ------------------------------------------------------- */
+
+  const EXPLORE_PRICE_RE = /^[$€£¥]\s?\d[\d,]*$/;
+  const EXPLORE_HEAT_ATTR = 'data-gfe-heat';
+
+  function findExplorePriceLabelNodes() {
+    const all = Array.from(document.querySelectorAll('body *'));
+    return all.filter((n) => {
+      if (n.children.length > 0) return false;
+      return EXPLORE_PRICE_RE.test((n.textContent || '').trim());
+    });
+  }
+
+  function findPillContainer(priceNode) {
+    let node = priceNode;
+    for (let i = 0; i < 6 && node && node !== document.body; i += 1, node = node.parentElement) {
+      const bg = getComputedStyle(node).backgroundColor;
+      if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') return node;
+    }
+    return priceNode.parentElement || priceNode;
+  }
+
+  function priceHeatColor(norm) {
+    // norm: 0 (cheapest) -> 1 (most expensive). Hue 120 (green) -> 0 (red),
+    // i.e. a traffic-light gradient that passes through yellow at the midpoint.
+    const hue = 120 - 120 * norm;
+    return {
+      background: `hsl(${hue}, 80%, 90%)`,
+      text: `hsl(${hue}, 85%, 25%)`,
+    };
+  }
+
+  function colorizeExploreMap() {
+    const priceNodes = findExplorePriceLabelNodes();
+    if (!priceNodes.length) return;
+
+    const parsed = priceNodes
+      .map((node) => ({ node, amount: parseInt((node.textContent || '').replace(/[^\d]/g, ''), 10) }))
+      .filter((p) => Number.isFinite(p.amount));
+    if (!parsed.length) return;
+
+    const min = Math.min(...parsed.map((p) => p.amount));
+    const max = Math.max(...parsed.map((p) => p.amount));
+    const range = max - min;
+
+    parsed.forEach(({ node, amount }) => {
+      const norm = range > 0 ? (amount - min) / range : 0.5;
+      const { background, text } = priceHeatColor(norm);
+      const pill = findPillContainer(node);
+      pill.style.setProperty('background-color', background, 'important');
+      pill.style.setProperty('color', text, 'important');
+      node.style.setProperty('color', text, 'important');
+      pill.setAttribute(EXPLORE_HEAT_ATTR, '1');
+    });
+
+    LOG(`Colorized ${parsed.length} explore map price pin(s), range $${min}-$${max}`);
+  }
+
+  let explorePaintScheduled = false;
+  function scheduleColorizeExploreMap() {
+    if (explorePaintScheduled) return;
+    explorePaintScheduled = true;
+    requestAnimationFrame(() => {
+      explorePaintScheduled = false;
+      try {
+        colorizeExploreMap();
+      } catch (e) {
+        ERR('colorizeExploreMap failed:', e);
+      }
+    });
+  }
+
+  /* ---------------------------------------------------------
    * UI — built entirely with createElement/appendChild, no
    * innerHTML anywhere on the Google Flights page itself, so it
    * survives Trusted Types CSP.
@@ -1028,14 +1117,25 @@
   }
 
   const observer = new MutationObserver(() => {
-    try { addButtons(); } catch (e) { ERR('addButtons failed:', e); }
+    if (isFlightsPage()) {
+      try { addButtons(); } catch (e) { ERR('addButtons failed:', e); }
+    }
+    if (isExplorePage()) {
+      scheduleColorizeExploreMap();
+    }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  try {
-    addButtons();
-  } catch (e) {
-    ERR('Initial addButtons failed:', e);
+  if (isFlightsPage()) {
+    try {
+      addButtons();
+    } catch (e) {
+      ERR('Initial addButtons failed:', e);
+    }
+  }
+
+  if (isExplorePage()) {
+    scheduleColorizeExploreMap();
   }
 
   LOG('Script loaded');
