@@ -773,6 +773,16 @@
 
   const EXPLORE_PRICE_RE = /^[$€£¥]\s?\d[\d,]*$/;
   const EXPLORE_HEAT_ATTR = 'data-gfe-heat';
+  const EXPLORE_PERCENTILE_CLAMP = 0.05; // ignore the bottom/top 5% when setting the gradient's range
+
+  function percentile(sortedNums, p) {
+    if (sortedNums.length === 1) return sortedNums[0];
+    const idx = p * (sortedNums.length - 1);
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return sortedNums[lo];
+    return sortedNums[lo] + (sortedNums[hi] - sortedNums[lo]) * (idx - lo);
+  }
 
   function findExplorePriceLabelNodes() {
     const all = Array.from(document.querySelectorAll('body *'));
@@ -810,12 +820,18 @@
       .filter((p) => Number.isFinite(p.amount));
     if (!parsed.length) return;
 
-    const min = Math.min(...parsed.map((p) => p.amount));
-    const max = Math.max(...parsed.map((p) => p.amount));
+    const sorted = parsed.map((p) => p.amount).sort((a, b) => a - b);
+    // Clamp the gradient's range to the 5th-95th percentile so a single
+    // outlier (e.g. one absurdly expensive far-flung city) doesn't wash out
+    // the color differences between all the other, more comparable prices.
+    // Amounts beyond this range just saturate to full green/red.
+    const min = percentile(sorted, EXPLORE_PERCENTILE_CLAMP);
+    const max = percentile(sorted, 1 - EXPLORE_PERCENTILE_CLAMP);
     const range = max - min;
 
     parsed.forEach(({ node, amount }) => {
-      const norm = range > 0 ? (amount - min) / range : 0.5;
+      const raw = range > 0 ? (amount - min) / range : 0.5;
+      const norm = Math.min(1, Math.max(0, raw));
       const { background, text } = priceHeatColor(norm);
       const pill = findPillContainer(node);
       pill.style.setProperty('background-color', background, 'important');
@@ -824,7 +840,7 @@
       pill.setAttribute(EXPLORE_HEAT_ATTR, '1');
     });
 
-    LOG(`Colorized ${parsed.length} explore map price pin(s), range $${min}-$${max}`);
+    LOG(`Colorized ${parsed.length} explore map price pin(s), gradient range $${Math.round(min)}-$${Math.round(max)} (clamped ${EXPLORE_PERCENTILE_CLAMP * 100}th-${(1 - EXPLORE_PERCENTILE_CLAMP) * 100}th pct)`);
   }
 
   let explorePaintScheduled = false;
